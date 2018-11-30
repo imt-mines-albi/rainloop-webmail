@@ -3,9 +3,14 @@
 class LDAPLoginMappingPlugin extends \RainLoop\Plugins\AbstractPlugin
 {
 	/**
+	 * @var array
+	 */
+	private $aDomains = array();
+
+	/**
 	 * @var string
 	 */
-	private $sDomain = 'example.com';
+	private $sSearchDomain = '';
 
 	/**
 	 * @var string
@@ -54,7 +59,7 @@ class LDAPLoginMappingPlugin extends \RainLoop\Plugins\AbstractPlugin
 	{
 		if (!\function_exists('ldap_connect'))
 		{
-			return 'The LDAP PHP exention must be installed to use this plugin';
+			return 'The LDAP PHP extension must be installed to use this plugin';
 		}
 
 		return '';
@@ -71,7 +76,8 @@ class LDAPLoginMappingPlugin extends \RainLoop\Plugins\AbstractPlugin
 	{
 		$this->oLogger = \MailSo\Log\Logger::SingletonInstance();
 
-		$this->sDomain = \trim($this->Config()->Get('plugin', 'domain', ''));
+		$this->aDomains = \explode(',', $this->Config()->Get('plugin', 'domains', ''));
+		$this->sSearchDomain = \trim($this->Config()->Get('plugin', 'search_domain', ''));
 		$this->sHostName = \trim($this->Config()->Get('plugin', 'hostname', ''));
 		$this->iHostPort = (int) $this->Config()->Get('plugin', 'port', 389);
 		$this->sUsersDn = \trim($this->Config()->Get('plugin', 'users_dn', ''));
@@ -95,7 +101,14 @@ class LDAPLoginMappingPlugin extends \RainLoop\Plugins\AbstractPlugin
 	public function configMapping()
 	{
 		return array(
+/*
 			\RainLoop\Plugins\Property::NewInstance('domain')->SetLabel('LDAP enabled domain')
+			->SetDefaultValue('example.com'),
+*/
+			\RainLoop\Plugins\Property::NewInstance('domains')->SetLabel('LDAP enabled domains')
+				->SetDefaultValue('example1.com,example2.com'),
+			\RainLoop\Plugins\Property::NewInstance('search_domain')->SetLabel('Forced domain')
+				->SetDescription('Force this domain email for LDAP search')
 				->SetDefaultValue('example.com'),
 			\RainLoop\Plugins\Property::NewInstance('hostname')->SetLabel('LDAP hostname')
 				->SetDefaultValue('127.0.0.1'),
@@ -138,8 +151,17 @@ class LDAPLoginMappingPlugin extends \RainLoop\Plugins\AbstractPlugin
 	 */
 	private function ldapSearch($sEmail)
 	{
-		if ( preg_match('/^[a-z0-9._-]+@' . $this->sDomain . '$/i', $sEmail) !== 1) {
-			$this->oLogger->Write('preg_match: no match in "' . $sEmail . '" for /^[a-z0-9._-]+@' . $this->sDomain . '$/i', \MailSo\Log\Enumerations\Type::INFO, 'LDAP');
+		$bFound = FALSE;
+		foreach ( $this->aDomains as $sDomain ) {
+			$sRegex = '/^[a-z0-9._-]+@' . preg_quote(trim($sDomain)) . '$/i';
+			$this->oLogger->Write('DEBUG regex ' . $sRegex, \MailSo\Log\Enumerations\Type::INFO, 'LDAP');
+			if ( preg_match($sRegex, $sEmail) === 1) {
+				$bFound = TRUE;
+				break;
+			}
+		}
+		if ( !$bFound ) {
+			$this->oLogger->Write('preg_match: no match in "' . $sEmail . '" for /^[a-z0-9._-]+@{configured-domains}$/i', \MailSo\Log\Enumerations\Type::INFO, 'LDAP');
 			return FALSE;
 		}
 		$sLogin = \MailSo\Base\Utils::GetAccountNameFromEmail($sEmail);
@@ -159,8 +181,12 @@ class LDAPLoginMappingPlugin extends \RainLoop\Plugins\AbstractPlugin
 		}
 		$sSearchDn = $this->sUsersDn;
 		$aItems = array($this->sLoginField, $this->sEmailField);
-		$sFilter = '(&(objectclass='.$this->sObjectClass.')(|('.$this->sEmailField.'='.$sEmail.')('.$this->sLoginField.'='.$sLogin.')))';
+		if ( 0 < \strlen($this->sSearchDomain) ) {
+			$sFilter = '(&(objectclass='.$this->sObjectClass.')(|('.$this->sEmailField.'='.$sLogin.'@'.$this->sSearchDomain.')('.$this->sLoginField.'='.$sLogin.')))';
 
+		} else {
+			$sFilter = '(&(objectclass='.$this->sObjectClass.')(|('.$this->sEmailField.'='.$sEmail.')('.$this->sLoginField.'='.$sLogin.')))';
+		}
 		$this->oLogger->Write('ldap_search: start: '.$sSearchDn.' / '.$sFilter, \MailSo\Log\Enumerations\Type::INFO, 'LDAP');
 		$oS = @\ldap_search($oCon, $sSearchDn, $sFilter, $aItems, 0, 30, 30);
 		if (!$oS) {
